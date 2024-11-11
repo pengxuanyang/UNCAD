@@ -16,8 +16,8 @@ VAD_unc checkpoints are [here](). SparseDrive_unc checkpoints are [here]().
 
 ## Catalog
 
-- [x] Clarification Code
-- [] Checkpoint release
+- [ ] Clarification Code
+- [ ] Checkpoint release
 - [x] Code release
   - [x] VAD_unc
   - [x] SparseDrive_unc
