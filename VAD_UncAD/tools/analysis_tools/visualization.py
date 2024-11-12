@@ -6,6 +6,9 @@ import os.path as osp
 from PIL import Image
 from tqdm import tqdm
 from typing import List, Dict
+import torch.nn.functional as F
+from matplotlib.patches import Ellipse
+from matplotlib.cm import get_cmap
 
 import cv2
 import mmcv
@@ -482,6 +485,76 @@ def get_gt_vec_maps(
     
     return gt_vecs_pts_loc, gt_vecs_label
 
+#vis mapunc
+def plot_points_with_laplace_variances(x, y, beta_x, beta_y, color, sample_idx, ax, pred_label_3d, heading, std):
+    ax.plot(x, y, color=color, linewidth=1, alpha=0.8, zorder=-1)
+    ax.scatter(x, y, color=color, s=2, alpha=0.8, zorder=-1)
+
+    var_x = 2 * beta_x ** 2
+    var_y = 2 * beta_y ** 2
+        
+    for i in range(len(x)):
+        if std:
+            width = np.sqrt(var_x[i])*2
+            height = np.sqrt(var_y[i])*2
+        else:
+            width, height = 0, 0
+        
+        if pred_label_3d  == 2: 
+            color = 'green'
+        else:
+            color = color
+        ellipse = Ellipse((x[i], y[i]), width=width, height=height,
+                            fc=color, lw=0.5, alpha=0.3) 
+        ax.add_patch(ellipse)
+            
+def render_fut_trajs_grad_color(
+               axes,
+               plan_traj,
+               linewidth: float = 1,
+               linestyles='solid',
+               cmap='viridis',
+               fut_ts: int = 6,
+               alpha: int = 0.8,
+               mode_idx=None) -> None:
+        """
+        Renders the box in the provided Matplotlib axis.
+        :param axis: Axis onto which the box should be drawn.
+        :param view: <np.array: 3, 3>. Define a projection in needed (e.g. for drawing projection in an image).
+        :param normalize: Whether to normalize the remaining coordinate.
+        :param colors: (<Matplotlib.colors>: 3). Valid Matplotlib colors (<str> or normalized RGB tuple) for front,
+            back and sides.
+        :param linewidth: Width in pixel of the box sides.
+        """
+
+        fut_coords = plan_traj.reshape((-1, fut_ts, 2))
+        if mode_idx is not None:
+            fut_coords = fut_coords[[mode_idx]]
+
+        for i in range(fut_coords.shape[0]):
+            fut_coord = fut_coords[i]
+            fut_coord = fut_coord.cumsum(axis=-2)
+            fut_coord = np.concatenate((np.zeros((1, fut_coord.shape[1])), fut_coord), axis=0)
+            fut_coord_segments = np.stack((fut_coord[:-1], fut_coord[1:]), axis=1)
+
+            fut_vecs = None
+            for j in range(fut_coord_segments.shape[0]):
+                fut_vec_j = fut_coord_segments[j]
+                x_linspace = np.linspace(fut_vec_j[0, 0], fut_vec_j[1, 0], 51)
+                y_linspace = np.linspace(fut_vec_j[0, 1], fut_vec_j[1, 1], 51)
+                xy = np.stack((x_linspace, y_linspace), axis=1)
+                xy = np.stack((xy[:-1], xy[1:]), axis=1)
+                if fut_vecs is None:
+                    fut_vecs = xy
+                else:
+                    fut_vecs = np.concatenate((fut_vecs, xy), axis=0)
+
+            y = np.sin(np.linspace(1/2*np.pi, 3/2*np.pi, 301))
+            colors = color_map(y[:-1], cmap)
+            line_segments = LineCollection(fut_vecs, colors=colors, linewidths=linewidth, linestyles=linestyles, cmap=cmap)
+
+
+            axes.add_collection(line_segments)
 
 def visualize_sample(nusc: NuScenes,
                      sample_token: str,
@@ -541,12 +614,18 @@ def visualize_sample(nusc: NuScenes,
         if vector['confidence_level'] < 0.6:
             continue
         pred_pts_3d = vector['pts']
+        pred_betas_3d = vector['betas']
         pred_label_3d = vector['type']
         pts_x = np.array([pt[0] for pt in pred_pts_3d])
         pts_y = np.array([pt[1] for pt in pred_pts_3d])
+        beta_x = np.array([pt[0] for pt in pred_betas_3d])
+        beta_y = np.array([pt[1] for pt in pred_betas_3d])
 
-        axes.plot(pts_x, pts_y, color=colors_plt[pred_label_3d],linewidth=1,alpha=0.8,zorder=-1)
-        axes.scatter(pts_x, pts_y, color=colors_plt[pred_label_3d],s=1,alpha=0.8,zorder=-1)  
+        # axes.plot(pts_x, pts_y, color=colors_plt[pred_label_3d],linewidth=1,alpha=0.8,zorder=-1)
+        # axes.scatter(pts_x, pts_y, color=colors_plt[pred_label_3d],s=1,alpha=0.8,zorder=-1)
+        
+        #if visualize mapunc
+        plot_points_with_laplace_variances(pts_x, pts_y, beta_x, beta_y, colors_plt[pred_label_3d], sample_token, axes, pred_label_3d, heading=0, std=True)  
 
     # ignore_list = ['barrier', 'motorcycle', 'bicycle', 'traffic_cone']
     ignore_list = ['barrier', 'bicycle', 'traffic_cone']
@@ -568,36 +647,102 @@ def visualize_sample(nusc: NuScenes,
         else:
             box.render_fut_trajs_coords(axes, color='tomato', linewidth=1)
 
+    # Show GT boxes.
+    # for i, box in enumerate(boxes_gt):
+    #     if box.name in ignore_list:
+    #         continue
+    #     box.render(axes, view=np.eye(4), colors=('blue', 'blue', 'blue'), linewidth=1, box_idx=None)
+    #     if traj_use_perstep_offset:
+    #         mode_idx = [0]  
+    #         box.render_fut_trajs_grad_color(axes, linewidth=1, mode_idx=mode_idx, fut_ts=6, cmap='winter')
+    #     else:
+    #         box.render_fut_trajs_coords(axes, color='blue', linewidth=1)
+
     # Show Planning.
     axes.plot([-0.9, -0.9], [-2, 2], color='mediumseagreen', linewidth=1, alpha=0.8)
     axes.plot([-0.9, 0.9], [2, 2], color='mediumseagreen', linewidth=1, alpha=0.8)
     axes.plot([0.9, 0.9], [2, -2], color='mediumseagreen', linewidth=1, alpha=0.8)
     axes.plot([0.9, -0.9], [-2, -2], color='mediumseagreen', linewidth=1, alpha=0.8)
     axes.plot([0.0, 0.0], [0.0, 2], color='mediumseagreen', linewidth=1, alpha=0.8)
-    plan_cmd = np.argmax(pred_data['plan_results'][sample_token][1][0,0,0])
-    plan_traj = pred_data['plan_results'][sample_token][0][plan_cmd]
+
+    # Get the plan command and plan trajectory
+    plan_cmd = np.argmax(pred_data['plan_results'][sample_token][1][0, 0, 0])
+    plan_traj = pred_data['plan_results'][sample_token][0][plan_cmd]  # [6,6,2]
     plan_traj[abs(plan_traj) < 0.01] = 0.0
-    plan_traj = plan_traj.cumsum(axis=0)
-    plan_traj = np.concatenate((np.zeros((1, plan_traj.shape[1])), plan_traj), axis=0)
-    plan_traj = np.stack((plan_traj[:-1], plan_traj[1:]), axis=1)
 
-    plan_vecs = None
+    # Get the plan classification scores
+    plan_cls = pred_data['plan_results'][sample_token][5]
+
+    # Find the index of the trajectory with the highest classification score
+    best_traj_idx = np.argmax(plan_cls)
+
+    # Dictionary to store LineCollection objects
+    line_segments_dict = {}
+
+    # Colormap list for other trajectories (default is blue with 'winter')
+    cmap_list = ['winter', 'winter', 'winter', 'winter', 'winter', 'winter']
+    
+    # Define colors for the highest scoring trajectory (e.g., use 'autumn' colormap for best)
+    best_traj_color = 'Purples'
+
     for i in range(plan_traj.shape[0]):
-        plan_vec_i = plan_traj[i]
-        x_linspace = np.linspace(plan_vec_i[0, 0], plan_vec_i[1, 0], 51)
-        y_linspace = np.linspace(plan_vec_i[0, 1], plan_vec_i[1, 1], 51)
-        xy = np.stack((x_linspace, y_linspace), axis=1)
-        xy = np.stack((xy[:-1], xy[1:]), axis=1)
-        if plan_vecs is None:
-            plan_vecs = xy
-        else:
-            plan_vecs = np.concatenate((plan_vecs, xy), axis=0)
+        fut_coord = plan_traj[i]
+        fut_coord = fut_coord.cumsum(axis=-2)
+        fut_coord = np.concatenate((np.zeros((1, fut_coord.shape[1])), fut_coord), axis=0)
+        fut_coord_segments = np.stack((fut_coord[:-1], fut_coord[1:]), axis=1)
 
-    cmap = 'winter'
-    y = np.sin(np.linspace(1/2*np.pi, 3/2*np.pi, 301))
-    colors = color_map(y[:-1], cmap)
-    line_segments = LineCollection(plan_vecs, colors=colors, linewidths=1, linestyles='solid', cmap=cmap)
-    axes.add_collection(line_segments)
+        fut_vecs = None
+        for j in range(fut_coord_segments.shape[0]):
+            fut_vec_j = fut_coord_segments[j]
+            x_linspace = np.linspace(fut_vec_j[0, 0], fut_vec_j[1, 0], 51)
+            y_linspace = np.linspace(fut_vec_j[0, 1], fut_vec_j[1, 1], 51)
+            xy = np.stack((x_linspace, y_linspace), axis=1)
+            xy = np.stack((xy[:-1], xy[1:]), axis=1)
+            if fut_vecs is None:
+                fut_vecs = xy
+            else:
+                fut_vecs = np.concatenate((fut_vecs, xy), axis=0)
+
+        # Use 'autumn' colormap for the trajectory with the highest score, 'winter' for others
+        # if i == best_traj_idx:
+        #     cmap = get_cmap(best_traj_color)
+        # else:
+        #     cmap = get_cmap(cmap_list[i])
+
+        y = np.sin(np.linspace(1 / 2 * np.pi, 3 / 2 * np.pi, 301))
+        cmap = get_cmap(cmap_list[i])
+        colors = cmap(y[:-1])
+
+        # Create LineCollection objects and store them in the dictionary
+        line_segments_dict[f'line_segments_{i}'] = LineCollection(fut_vecs, colors=colors, linewidths=1, linestyles='solid', cmap=cmap)
+
+        # Add the LineCollection to the axes
+        axes.add_collection(line_segments_dict[f'line_segments_{i}'])
+
+    # Ground truth trajectory visualization
+    gt_traj = pred_data['plan_results'][sample_token][2][0][0]  # 2 is gt_fut, [0][0] because gt_fut[1,1,6,2]
+    gt_traj[abs(gt_traj) < 0.01] = 0.0
+    gt_traj = gt_traj.cumsum(axis=0)
+    gt_traj = np.concatenate((np.zeros((1, gt_traj.shape[1])), gt_traj), axis=0)
+    gt_traj = np.stack((gt_traj[:-1], gt_traj[1:]), axis=1)
+
+    gt_vecs = None
+    for i in range(gt_traj.shape[0]):
+        gt_vec_i = gt_traj[i]
+        gt_x_linspace = np.linspace(gt_vec_i[0, 0], gt_vec_i[1, 0], 51)
+        gt_y_linspace = np.linspace(gt_vec_i[0, 1], gt_vec_i[1, 1], 51)
+        gt_xy = np.stack((gt_x_linspace, gt_y_linspace), axis=1)
+        gt_xy = np.stack((gt_xy[:-1], gt_xy[1:]), axis=1)
+        if gt_vecs is None:
+            gt_vecs = gt_xy
+        else:
+            gt_vecs = np.concatenate((gt_vecs, gt_xy), axis=0)
+
+    cmap = 'autumn'
+    gt_y = np.sin(np.linspace(1 / 2 * np.pi, 3 / 2 * np.pi, 301))
+    gt_colors = color_map(gt_y[:-1], cmap)
+    gt_line_segments = LineCollection(gt_vecs, colors=gt_colors, linewidths=1, linestyles='solid', cmap=cmap)
+    axes.add_collection(gt_line_segments)
 
     axes.axes.xaxis.set_ticks([])
     axes.axes.yaxis.set_ticks([])
@@ -728,184 +873,271 @@ def parse_args():
 
     return args
 
+def get_sample_tokens_from_scene(scene_token):
+    
+    scene = nusc.get('scene', scene_token)
+    
+    current_sample_token = scene['first_sample_token']
+    
+    sample_tokens = []
+
+    
+    while current_sample_token != '':
+        
+        sample_tokens.append(current_sample_token)
+        
+        current_sample = nusc.get('sample', current_sample_token)
+        
+        current_sample_token = current_sample['next']
+
+    return sample_tokens
 
 if __name__ == '__main__':
     args = parse_args()
     inference_result_path = args.result_path
     out_path = args.save_path
     bevformer_results = mmcv.load(inference_result_path)
-    sample_token_list = list(bevformer_results['results'].keys())
-
+    all_sample_token_list = list(bevformer_results['results'].keys())
     nusc = NuScenes(version='v1.0-trainval', dataroot='./data/nuscenes', verbose=True)
-    
-    imgs = []
-    fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
-    video_path = osp.join(out_path, 'vis.mp4')
-    video = cv2.VideoWriter(video_path, fourcc, 10, (2933, 800), True)
-    for id in tqdm(range(len(sample_token_list))):
-        mmcv.mkdir_or_exist(out_path)
-        render_sample_data(sample_token_list[id],
-                           pred_data=bevformer_results,
-                           out_path=out_path)
-        pred_path = osp.join(out_path, 'bev_pred.png')
-        pred_img = cv2.imread(pred_path)
-        os.remove(pred_path)
+    #one scene one video
+    scene_tokens = set()
 
-        sample_token = sample_token_list[id]
+    for sample_token in all_sample_token_list:
         sample = nusc.get('sample', sample_token)
-        # sample = data['results'][sample_token_list[0]][0]
-        cams = [
-            'CAM_FRONT_LEFT',
-            'CAM_FRONT',
-            'CAM_FRONT_RIGHT',
-            'CAM_BACK_LEFT',
-            'CAM_BACK',
-            'CAM_BACK_RIGHT',
-        ]
+        scene_token = sample['scene_token']
+        scene_tokens.add(scene_token)
+    scene_tokens_list = list(scene_tokens)
 
-        cam_imgs = []
-        for cam in cams:
-            sample_data_token = sample['data'][cam]
-            sd_record = nusc.get('sample_data', sample_data_token)
-            sensor_modality = sd_record['sensor_modality']
-            if sensor_modality in ['lidar', 'radar']:
-                assert False
-            elif sensor_modality == 'camera':
-                boxes = [Box(record['translation'], record['size'], Quaternion(record['rotation']),
-                            name=record['detection_name'], token='predicted') for record in
-                        bevformer_results['results'][sample_token]]
-                data_path, boxes_pred, camera_intrinsic = get_predicted_data(sample_data_token,
-                                                                            box_vis_level=BoxVisibility.ANY,
-                                                                            pred_anns=boxes)
-                _, boxes_gt, _ = nusc.get_sample_data(sample_data_token, box_vis_level=BoxVisibility.ANY)
+    print(f'scene number: {len(scene_tokens_list)}')
+    for scene_token in scene_tokens_list:
+        #one scene one video
+        scene_out_path = osp.join(out_path, scene_token)
+        mmcv.mkdir_or_exist(scene_out_path)
 
-                data = Image.open(data_path)
- 
-                # Show image.
-                _, ax = plt.subplots(1, 1, figsize=(6, 12))
-                ax.imshow(data)
-
-                if cam == 'CAM_FRONT':
-                    lidar_sd_record =  nusc.get('sample_data', sample['data']['LIDAR_TOP'])
-                    lidar_cs_record = nusc.get('calibrated_sensor', lidar_sd_record['calibrated_sensor_token'])
-                    lidar_pose_record = nusc.get('ego_pose', lidar_sd_record['ego_pose_token'])
-
-                    # get plan traj [x,y,z,w] quaternion, w=1
-                    # we set z=-1 to get points near the ground in lidar coord system
-                    plan_cmd = np.argmax(bevformer_results['plan_results'][sample_token][1][0,0,0])
-                    plan_traj = bevformer_results['plan_results'][sample_token][0][plan_cmd]
-                    plan_traj[abs(plan_traj) < 0.01] = 0.0
-                    plan_traj = plan_traj.cumsum(axis=0)
-
-                    plan_traj = np.concatenate((
-                        plan_traj[:, [0]],
-                        plan_traj[:, [1]],
-                        -1.0*np.ones((plan_traj.shape[0], 1)),
-                        np.ones((plan_traj.shape[0], 1)),
-                    ), axis=1)
-                    # add the start point in lcf
-                    plan_traj = np.concatenate((np.zeros((1, plan_traj.shape[1])), plan_traj), axis=0)
-                    # plan_traj[0, :2] = 2*plan_traj[1, :2] - plan_traj[2, :2]
-                    plan_traj[0, 0] = 0.3
-                    plan_traj[0, 2] = -1.0
-                    plan_traj[0, 3] = 1.0
-
-                    l2e_r = lidar_cs_record['rotation']
-                    l2e_t = lidar_cs_record['translation']
-                    e2g_r = lidar_pose_record['rotation']
-                    e2g_t = lidar_pose_record['translation']
-                    l2e_r_mat = Quaternion(l2e_r).rotation_matrix
-                    e2g_r_mat = Quaternion(e2g_r).rotation_matrix
-                    s2l_r, s2l_t = obtain_sensor2top(nusc, sample_data_token, l2e_t, l2e_r_mat, e2g_t, e2g_r_mat, cam)
-                    # obtain lidar to image transformation matrix
-                    lidar2cam_r = np.linalg.inv(s2l_r)
-                    lidar2cam_t = s2l_t @ lidar2cam_r.T
-                    lidar2cam_rt = np.eye(4)
-                    lidar2cam_rt[:3, :3] = lidar2cam_r.T
-                    lidar2cam_rt[3, :3] = -lidar2cam_t
-                    viewpad = np.eye(4)
-                    viewpad[:camera_intrinsic.shape[0], :camera_intrinsic.shape[1]] = camera_intrinsic
-                    lidar2img_rt = (viewpad @ lidar2cam_rt.T)
-                    plan_traj = lidar2img_rt @ plan_traj.T
-                    plan_traj = plan_traj[0:2, ...] / np.maximum(
-                        plan_traj[2:3, ...], np.ones_like(plan_traj[2:3, ...]) * 1e-5)
-                    plan_traj = plan_traj.T
-                    plan_traj = np.stack((plan_traj[:-1], plan_traj[1:]), axis=1)
-
-                    plan_vecs = None
-                    for i in range(plan_traj.shape[0]):
-                        plan_vec_i = plan_traj[i]
-                        x_linspace = np.linspace(plan_vec_i[0, 0], plan_vec_i[1, 0], 51)
-                        y_linspace = np.linspace(plan_vec_i[0, 1], plan_vec_i[1, 1], 51)
-                        xy = np.stack((x_linspace, y_linspace), axis=1)
-                        xy = np.stack((xy[:-1], xy[1:]), axis=1)
-                        if plan_vecs is None:
-                            plan_vecs = xy
-                        else:
-                            plan_vecs = np.concatenate((plan_vecs, xy), axis=0)
-
-                    cmap = 'winter'
-                    y = np.sin(np.linspace(1/2*np.pi, 3/2*np.pi, 301))
-                    colors = color_map(y[:-1], cmap)
-                    line_segments = LineCollection(plan_vecs, colors=colors, linewidths=2, linestyles='solid', cmap=cmap)
-                    ax.add_collection(line_segments)
-
-                ax.set_xlim(0, data.size[0])
-                ax.set_ylim(data.size[1], 0)
-                ax.axis('off')
-                if out_path is not None:
-                    savepath = osp.join(out_path, f'{cam}_PRED')
-                    plt.savefig(savepath, bbox_inches='tight', dpi=200, pad_inches=0.0)
-                plt.close()
-
-                # Load boxes and image.
-                data_path = osp.join(out_path, f'{cam}_PRED.png')
-                cam_img = cv2.imread(data_path)
-                lw = 6
-                tf = max(lw - 3, 1)
-                w, h = cv2.getTextSize(cam, 0, fontScale=lw / 6, thickness=tf)[0]  # text width, height
-                # color=(0, 0, 0)
-                txt_color=(255, 255, 255)
-                cv2.putText(cam_img,
-                            cam, (10, h + 10),
-                            0,
-                            lw / 6,
-                            txt_color,
-                            thickness=tf,
-                            lineType=cv2.LINE_AA)
-                cam_imgs.append(cam_img)
-            else:
-                raise ValueError("Error: Unknown sensor modality!")
-
-        plan_cmd = np.argmax(bevformer_results['plan_results'][sample_token][1][0,0,0])
-        cmd_list = ['Turn Right', 'Turn Left', 'Go Straight']
-        plan_cmd_str = cmd_list[plan_cmd]
-        pred_img = cv2.copyMakeBorder(pred_img, 10, 10, 10, 10, cv2.BORDER_CONSTANT, None, value = 0)
-        # font
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        # fontScale
-        fontScale = 1
-        # Line thickness of 2 px
-        thickness = 3
-        # org
-        org = (20, 40)      
-        # Blue color in BGR
-        color = (0, 0, 0)
-        # Using cv2.putText() method
-        pred_img = cv2.putText(pred_img, 'BEV', org, font, 
-                        fontScale, color, thickness, cv2.LINE_AA)
-        pred_img = cv2.putText(pred_img, plan_cmd_str, (20, 770), font, 
-                        fontScale, color, thickness, cv2.LINE_AA)
+        sample_token_list = []
+        sample_token_list.extend(get_sample_tokens_from_scene(scene_token))
+        print(f'samples number in {scene_token} are {len(sample_token_list)}')
         
-        sample_img = pred_img
-        cam_img_top = cv2.hconcat([cam_imgs[0], cam_imgs[1], cam_imgs[2]])
-        cam_img_down = cv2.hconcat([cam_imgs[3], cam_imgs[4], cam_imgs[5]])
-        cam_img = cv2.vconcat([cam_img_top, cam_img_down])
-        size = (2133, 800)
-        cam_img = cv2.resize(cam_img, size)
-        vis_img = cv2.hconcat([cam_img, sample_img])
+        imgs = []
+        fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
+        video_path = osp.join(scene_out_path, 'vis.mp4')
+        # video_path = osp.join(out_path, 'vis.mp4')
+        video = cv2.VideoWriter(video_path, fourcc, 10, (2933, 800), True)
+        for id in tqdm(range(len(sample_token_list))):
+            mmcv.mkdir_or_exist(scene_out_path)
+            render_sample_data(sample_token_list[id],
+                            pred_data=bevformer_results,
+                            out_path=scene_out_path)
+            pred_path = osp.join(scene_out_path, 'bev_pred.png')
+            pred_img = cv2.imread(pred_path)
+            os.remove(pred_path)
 
-        video.write(vis_img)
+            sample_token = sample_token_list[id]
+            sample = nusc.get('sample', sample_token)
+            # sample = data['results'][sample_token_list[0]][0]
+            cams = [
+                'CAM_FRONT_LEFT',
+                'CAM_FRONT',
+                'CAM_FRONT_RIGHT',
+                'CAM_BACK_LEFT',
+                'CAM_BACK',
+                'CAM_BACK_RIGHT',
+            ]
+
+            cam_imgs = []
+            for cam in cams:
+                sample_data_token = sample['data'][cam]
+                sd_record = nusc.get('sample_data', sample_data_token)
+                sensor_modality = sd_record['sensor_modality']
+                if sensor_modality in ['lidar', 'radar']:
+                    assert False
+                elif sensor_modality == 'camera':
+                    boxes = [Box(record['translation'], record['size'], Quaternion(record['rotation']),
+                                name=record['detection_name'], token='predicted') for record in
+                            bevformer_results['results'][sample_token]]
+                    data_path, boxes_pred, camera_intrinsic = get_predicted_data(sample_data_token,
+                                                                                box_vis_level=BoxVisibility.ANY,
+                                                                                pred_anns=boxes)
+                    _, boxes_gt, _ = nusc.get_sample_data(sample_data_token, box_vis_level=BoxVisibility.ANY)
+
+                    data = Image.open(data_path)
     
-    video.release()
-    cv2.destroyAllWindows()
+                    # Show image.
+                    _, ax = plt.subplots(1, 1, figsize=(6, 12))
+                    ax.imshow(data)
+
+                    if cam == 'CAM_FRONT':
+                        lidar_sd_record =  nusc.get('sample_data', sample['data']['LIDAR_TOP'])
+                        lidar_cs_record = nusc.get('calibrated_sensor', lidar_sd_record['calibrated_sensor_token'])
+                        lidar_pose_record = nusc.get('ego_pose', lidar_sd_record['ego_pose_token'])
+
+                        # get plan traj [x,y,z,w] quaternion, w=1
+                        # we set z=-1 to get points near the ground in lidar coord system
+                        plan_cmd = np.argmax(bevformer_results['plan_results'][sample_token][1][0,0,0])
+                        #choose the planning trajectory whti the highest score 
+                        
+                        plan_traj = bevformer_results['plan_results'][sample_token][0][plan_cmd]
+                        plan_traj_cls_scores = F.softmax(bevformer_results['plan_results'][sample_token][4][plan_cmd], dim=-1)
+                        min_mode_idx = torch.argmax(plan_traj_cls_scores)
+                        plan_traj = plan_traj[min_mode_idx]
+                        plan_traj[abs(plan_traj) < 0.01] = 0.0
+                        plan_traj = plan_traj.cumsum(axis=0)
+
+                        #gt planning trajectory
+                        gt_traj = bevformer_results['plan_results'][sample_token][2][0][0]
+                        gt_traj[abs(gt_traj) < 0.01] = 0.0
+                        gt_traj = gt_traj.cumsum(axis=0)
+
+                        plan_traj = np.concatenate((
+                            plan_traj[:, [0]],
+                            plan_traj[:, [1]],
+                            -1.0*np.ones((plan_traj.shape[0], 1)),
+                            np.ones((plan_traj.shape[0], 1)),
+                        ), axis=1)
+                        # add the start point in lcf
+                        plan_traj = np.concatenate((np.zeros((1, plan_traj.shape[1])), plan_traj), axis=0)
+                        # plan_traj[0, :2] = 2*plan_traj[1, :2] - plan_traj[2, :2]
+                        plan_traj[0, 0] = 0.3
+                        plan_traj[0, 2] = -1.0
+                        plan_traj[0, 3] = 1.0
+
+                        gt_traj = np.concatenate((
+                            gt_traj[:, [0]],
+                            gt_traj[:, [1]],
+                            -1.0*np.ones((gt_traj.shape[0], 1)),
+                            np.ones((gt_traj.shape[0], 1)),
+                        ), axis=1)
+                        # add the start point in lcf
+                        gt_traj = np.concatenate((np.zeros((1, gt_traj.shape[1])), gt_traj), axis=0)
+                        # gt_traj[0, :2] = 2*gt_traj[1, :2] - gt_traj[2, :2]
+                        gt_traj[0, 0] = 0.3
+                        gt_traj[0, 2] = -1.0
+                        gt_traj[0, 3] = 1.0
+
+                        l2e_r = lidar_cs_record['rotation']
+                        l2e_t = lidar_cs_record['translation']
+                        e2g_r = lidar_pose_record['rotation']
+                        e2g_t = lidar_pose_record['translation']
+                        l2e_r_mat = Quaternion(l2e_r).rotation_matrix
+                        e2g_r_mat = Quaternion(e2g_r).rotation_matrix
+                        s2l_r, s2l_t = obtain_sensor2top(nusc, sample_data_token, l2e_t, l2e_r_mat, e2g_t, e2g_r_mat, cam)
+                        # obtain lidar to image transformation matrix
+                        lidar2cam_r = np.linalg.inv(s2l_r)
+                        lidar2cam_t = s2l_t @ lidar2cam_r.T
+                        lidar2cam_rt = np.eye(4)
+                        lidar2cam_rt[:3, :3] = lidar2cam_r.T
+                        lidar2cam_rt[3, :3] = -lidar2cam_t
+                        viewpad = np.eye(4)
+                        viewpad[:camera_intrinsic.shape[0], :camera_intrinsic.shape[1]] = camera_intrinsic
+                        lidar2img_rt = (viewpad @ lidar2cam_rt.T)
+                        plan_traj = lidar2img_rt @ plan_traj.T
+                        plan_traj = plan_traj[0:2, ...] / np.maximum(
+                            plan_traj[2:3, ...], np.ones_like(plan_traj[2:3, ...]) * 1e-5)
+                        plan_traj = plan_traj.T
+                        plan_traj = np.stack((plan_traj[:-1], plan_traj[1:]), axis=1)
+
+                        gt_traj = lidar2img_rt @ gt_traj.T
+                        gt_traj = gt_traj[0:2, ...] / np.maximum(
+                            gt_traj[2:3, ...], np.ones_like(gt_traj[2:3, ...]) * 1e-5)
+                        gt_traj = gt_traj.T
+                        gt_traj = np.stack((gt_traj[:-1], gt_traj[1:]), axis=1)
+
+                        plan_vecs = None
+                        for i in range(plan_traj.shape[0]):
+                            plan_vec_i = plan_traj[i]
+                            x_linspace = np.linspace(plan_vec_i[0, 0], plan_vec_i[1, 0], 51)
+                            y_linspace = np.linspace(plan_vec_i[0, 1], plan_vec_i[1, 1], 51)
+                            xy = np.stack((x_linspace, y_linspace), axis=1)
+                            xy = np.stack((xy[:-1], xy[1:]), axis=1)
+                            if plan_vecs is None:
+                                plan_vecs = xy
+                            else:
+                                plan_vecs = np.concatenate((plan_vecs, xy), axis=0)
+
+                        gt_vecs = None
+                        for i in range(gt_traj.shape[0]):
+                            gt_vec_i = gt_traj[i]
+                            gt_x_linspace = np.linspace(gt_vec_i[0, 0], gt_vec_i[1, 0], 51)
+                            gt_y_linspace = np.linspace(gt_vec_i[0, 1], gt_vec_i[1, 1], 51)
+                            gt_xy = np.stack((gt_x_linspace, gt_y_linspace), axis=1)
+                            gt_xy = np.stack((gt_xy[:-1], gt_xy[1:]), axis=1)
+                            if gt_vecs is None:
+                                gt_vecs = gt_xy
+                            else:
+                                gt_vecs = np.concatenate((gt_vecs, gt_xy), axis=0)
+
+                        cmap = 'winter'
+                        y = np.sin(np.linspace(1/2*np.pi, 3/2*np.pi, 301))
+                        colors = color_map(y[:-1], cmap)
+                        line_segments = LineCollection(plan_vecs, colors=colors, linewidths=2, linestyles='solid', cmap=cmap)
+                        ax.add_collection(line_segments)
+
+                        #gt trajectory
+                        cmap = 'autumn'
+                        gt_y = np.sin(np.linspace(1/2*np.pi, 3/2*np.pi, 301))
+                        gt_colors = color_map(gt_y[:-1], cmap)
+                        gt_line_segments = LineCollection(gt_vecs, colors=gt_colors, linewidths=2, linestyles='solid', cmap=cmap)
+                        ax.add_collection(gt_line_segments)
+
+                    ax.set_xlim(0, data.size[0])
+                    ax.set_ylim(data.size[1], 0)
+                    ax.axis('off')
+                    if scene_out_path is not None:
+                        savepath = osp.join(scene_out_path, f'{cam}_PRED')
+                        plt.savefig(savepath, bbox_inches='tight', dpi=200, pad_inches=0.0)
+                    plt.close()
+
+                    # Load boxes and image.
+                    data_path = osp.join(scene_out_path, f'{cam}_PRED.png')
+                    cam_img = cv2.imread(data_path)
+                    lw = 6
+                    tf = max(lw - 3, 1)
+                    w, h = cv2.getTextSize(cam, 0, fontScale=lw / 6, thickness=tf)[0]  # text width, height
+                    # color=(0, 0, 0)
+                    txt_color=(255, 255, 255)
+                    cv2.putText(cam_img,
+                                cam, (10, h + 10),
+                                0,
+                                lw / 6,
+                                txt_color,
+                                thickness=tf,
+                                lineType=cv2.LINE_AA)
+                    cam_imgs.append(cam_img)
+                else:
+                    raise ValueError("Error: Unknown sensor modality!")
+
+            plan_cmd = np.argmax(bevformer_results['plan_results'][sample_token][1][0,0,0])
+            cmd_list = ['Turn Right', 'Turn Left', 'Go Straight']
+            plan_cmd_str = cmd_list[plan_cmd]
+            pred_img = cv2.copyMakeBorder(pred_img, 10, 10, 10, 10, cv2.BORDER_CONSTANT, None, value = 0)
+            # font
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            # fontScale
+            fontScale = 1
+            # Line thickness of 2 px
+            thickness = 3
+            # org
+            org = (20, 40)      
+            # Blue color in BGR
+            color = (0, 0, 0)
+            # Using cv2.putText() method
+            pred_img = cv2.putText(pred_img, 'BEV', org, font, 
+                            fontScale, color, thickness, cv2.LINE_AA)
+            pred_img = cv2.putText(pred_img, plan_cmd_str, (20, 770), font, 
+                            fontScale, color, thickness, cv2.LINE_AA)
+
+            sample_img = pred_img
+            cam_img_top = cv2.hconcat([cam_imgs[0], cam_imgs[1], cam_imgs[2]])
+            cam_img_down = cv2.hconcat([cam_imgs[3], cam_imgs[4], cam_imgs[5]])
+            cam_img = cv2.vconcat([cam_img_top, cam_img_down])
+            size = (2133, 800)
+            cam_img = cv2.resize(cam_img, size)
+            vis_img = cv2.hconcat([cam_img, sample_img])
+            # save vis_img
+            vis_img_save_path = osp.join(scene_out_path, f'{sample_token}_pred.png')
+            cv2.imwrite(vis_img_save_path, vis_img)
+
+            video.write(vis_img)
+        
+        video.release()
+        cv2.destroyAllWindows()
