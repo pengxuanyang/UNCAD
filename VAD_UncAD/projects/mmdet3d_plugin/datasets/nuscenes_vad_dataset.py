@@ -1040,9 +1040,10 @@ class VADCustomNuScenesDataset(NuScenesDataset):
         self.custom_eval_detection_configs = v1CustomDetectionConfig.deserialize(data)
 
         self.map_ann_file = map_ann_file
-        self.MAPCLASSES = self.get_map_classes(map_classes)
+        # self.MAPCLASSES = self.get_map_classes(map_classes)
         self.MAPCLASSES=['divider','ped_crossing','boundary','drivable_area']
-        self.NUM_MAPCLASSES = len(self.MAPCLASSES)
+        self.NUM_MAPCLASSES = len(['divider','ped_crossing','boundary'])
+        # self.NUM_MAPCLASSES = len(self.MAPCLASSES)
         self.pc_range = pc_range
         patch_h = pc_range[4]-pc_range[1]
         patch_w = pc_range[3]-pc_range[0]
@@ -1665,7 +1666,7 @@ class VADCustomNuScenesDataset(NuScenesDataset):
         from nuscenes import NuScenes
         self.nusc = NuScenes(version=self.version, dataroot=self.data_root,
                              verbose=False)
-
+        self.MAPCLASSES = ['divider','ped_crossing','boundary']
         output_dir = osp.join(*osp.split(result_path)[:-1])
 
         eval_set_map = {
