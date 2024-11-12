@@ -16,15 +16,15 @@ conda activate vad
 pip install torch==1.9.1+cu111 torchvision==0.10.1+cu111 torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
 ```
 
-**Additional Requirements**
-```
-pip install -r VAD_requirements.txt
-```
-
 **Setup MMDetection3D**
 ```
 cd /path/to/Vad_UncAD/mmdetection3d
-pip install -e .
+python setup.py develop
+```
+
+**Additional Requirements**
+```
+pip install -r VAD_requirements.txt
 ```
 
 **Prepare pretrained models.**

@@ -317,7 +317,7 @@ model = dict(
 
 dataset_type = 'VADCustomNuScenesDataset'
 data_root = 'data/nuscenes/'
-ann_data_root = 'data_processed/vad/'
+ann_data_root = 'data_processed/'
 file_client_args = dict(backend='disk')
 
 train_pipeline = [

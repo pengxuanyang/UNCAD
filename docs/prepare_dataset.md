@@ -19,7 +19,7 @@ unzip can_bus.zip
 **Prepare VAD Dataset**
 ```
 cd /path/to/VAD_UncAD
-python tools/data_converter/vad_nuscenes_converter.py nuscenes --root-path ./data/nuscenes --out-dir ./data/nuscenes --extra-tag vad_nuscenes --version v1.0 --canbus ./data
+sh script/create_data.sh
 ```
 
 Using the above code will generate `vad_nuscenes_infos_temporal_{train,val}.pkl`.
@@ -40,6 +40,13 @@ Vad_UncAD
 ├── data_processed/
 │   ├── vad_nuscenes_infos_temporal_train.pkl
 │   ├── vad_nuscenes_infos_temporal_val.pkl
+```
+
+**Generate anchors by K-means**
+Gnerated anchors are saved to data/kmeans and can be visualized in vis/kmeans.
+```
+mkdir -p vis/kmeans
+sh scripts/kmeans.sh
 ```
 
 ## Prepare SparseDrive Dataset

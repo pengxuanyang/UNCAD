@@ -478,19 +478,15 @@ class VectorizedLocalMap(object):
         'lane_divider': 0,
         'ped_crossing': 1,
         'contours': 2,
-        # add drivable_area index
-        'drivable_area':3,
         'others': -1
     }
     def __init__(self,
                  dataroot,
                  patch_size,
-                #  map_classes=['divider','ped_crossing','boundary'],
-                 map_classes=['divider','ped_crossing','boundary','drivable_area'],
+                 map_classes=['divider','ped_crossing','boundary'],
                  line_classes=['road_divider', 'lane_divider'],
                  ped_crossing_classes=['ped_crossing'],
-                #  contour_classes=['road_segment', 'lane'],
-                 contour_classes=['road_segment', 'lane','drivable_area'],
+                 contour_classes=['road_segment', 'lane'],
                  sample_dist=1,
                  num_samples=250,
                  padding=False,
@@ -565,27 +561,19 @@ class VectorizedLocalMap(object):
             else:
                 raise ValueError(f'WRONG vec_class: {vec_class}')
 
-        if not self.vec_classes[3]=='drivable_area':
-            # filter out -1
-            filtered_vectors = []
-            gt_pts_loc_3d = []
-            gt_pts_num_3d = []
-            gt_labels = []
-            gt_instance = []
-            for instance, type in vectors:
-                if type != -1:
-                    gt_instance.append(instance)
-                    gt_labels.append(type)
-            
-            gt_instance = LiDARInstanceLines(gt_instance,self.sample_dist,
-                            self.num_samples, self.padding, self.fixed_num,self.padding_value, patch_size=self.patch_size)
-        else:
-            gt_labels = []
-            gt_instance = []
-            for instance, type in vectors:
-                if type != -1:
-                    gt_instance.append(instance)
-                    gt_labels.append(type)
+        # filter out -1
+        filtered_vectors = []
+        gt_pts_loc_3d = []
+        gt_pts_num_3d = []
+        gt_labels = []
+        gt_instance = []
+        for instance, type in vectors:
+            if type != -1:
+                gt_instance.append(instance)
+                gt_labels.append(type)
+        
+        gt_instance = LiDARInstanceLines(gt_instance,self.sample_dist,
+                        self.num_samples, self.padding, self.fixed_num,self.padding_value, patch_size=self.patch_size)
 
         anns_results = dict(
             gt_vecs_pts_loc=gt_instance,
@@ -1041,6 +1029,875 @@ class VADCustomNuScenesDataset(NuScenesDataset):
 
         self.map_ann_file = map_ann_file
         # self.MAPCLASSES = self.get_map_classes(map_classes)
+        self.MAPCLASSES=['divider','ped_crossing','boundary']
+        self.NUM_MAPCLASSES = len(['divider','ped_crossing','boundary'])
+        # self.NUM_MAPCLASSES = len(self.MAPCLASSES)
+        self.pc_range = pc_range
+        patch_h = pc_range[4]-pc_range[1]
+        patch_w = pc_range[3]-pc_range[0]
+        self.patch_size = (patch_h, patch_w)
+        self.padding_value = padding_value
+        self.fixed_num = map_fixed_ptsnum_per_line
+        self.eval_use_same_gt_sample_num_flag = map_eval_use_same_gt_sample_num_flag
+        self.vector_map = VectorizedLocalMap(kwargs['data_root'], 
+                            patch_size=self.patch_size, map_classes=self.MAPCLASSES, 
+                            fixed_ptsnum_per_line=map_fixed_ptsnum_per_line,
+                            padding_value=self.padding_value)
+        self.is_vis_on_test = True
+
+    @classmethod
+    def get_map_classes(cls, map_classes=None):
+        """Get class names of current dataset.
+
+        Args:
+            classes (Sequence[str] | str | None): If classes is None, use
+                default CLASSES defined by builtin dataset. If classes is a
+                string, take it as a file name. The file contains the name of
+                classes where each line contains one class name. If classes is
+                a tuple or list, override the CLASSES defined by the dataset.
+
+        Return:
+            list[str]: A list of class names.
+        """
+        if map_classes is None:
+            return cls.MAPCLASSES
+
+        if isinstance(map_classes, str):
+            # take it as a file path
+            class_names = mmcv.list_from_file(map_classes)
+        elif isinstance(map_classes, (tuple, list)):
+            class_names = map_classes
+        else:
+            raise ValueError(f'Unsupported type {type(map_classes)} of map classes.')
+
+        return class_names
+
+    def vectormap_pipeline(self, example, input_dict):
+        '''
+        `example` type: <class 'dict'>
+            keys: 'img_metas', 'gt_bboxes_3d', 'gt_labels_3d', 'img';
+                  all keys type is 'DataContainer';
+                  'img_metas' cpu_only=True, type is dict, others are false;
+                  'gt_labels_3d' shape torch.size([num_samples]), stack=False,
+                                padding_value=0, cpu_only=False
+                  'gt_bboxes_3d': stack=False, cpu_only=True
+        '''
+        # import pdb;pdb.set_trace()
+        lidar2ego = np.eye(4)
+        lidar2ego[:3,:3] = Quaternion(input_dict['lidar2ego_rotation']).rotation_matrix
+        lidar2ego[:3, 3] = input_dict['lidar2ego_translation']
+        ego2global = np.eye(4)
+        ego2global[:3,:3] = Quaternion(input_dict['ego2global_rotation']).rotation_matrix
+        ego2global[:3, 3] = input_dict['ego2global_translation']
+
+        lidar2global = ego2global @ lidar2ego
+
+        lidar2global_translation = list(lidar2global[:3,3])
+        lidar2global_rotation = list(Quaternion(matrix=lidar2global).q)
+
+        location = input_dict['map_location']
+        ego2global_translation = input_dict['ego2global_translation']
+        ego2global_rotation = input_dict['ego2global_rotation']
+        anns_results = self.vector_map.gen_vectorized_samples(
+            location, lidar2global_translation, lidar2global_rotation
+        )
+        
+        '''
+        anns_results, type: dict
+            'gt_vecs_pts_loc': list[num_vecs], vec with num_points*2 coordinates
+            'gt_vecs_pts_num': list[num_vecs], vec with num_points
+            'gt_vecs_label': list[num_vecs], vec with cls index
+        '''
+        gt_vecs_label = to_tensor(anns_results['gt_vecs_label'])
+        if isinstance(anns_results['gt_vecs_pts_loc'], LiDARInstanceLines):
+            gt_vecs_pts_loc = anns_results['gt_vecs_pts_loc']
+        else:
+            gt_vecs_pts_loc = to_tensor(anns_results['gt_vecs_pts_loc'])
+            try:
+                gt_vecs_pts_loc = gt_vecs_pts_loc.flatten(1).to(dtype=torch.float32)
+            except:
+                # empty tensor, will be passed in train, 
+                # but we preserve it for test
+                gt_vecs_pts_loc = gt_vecs_pts_loc
+
+        example['map_gt_labels_3d'] = DC(gt_vecs_label, cpu_only=False)
+        example['map_gt_bboxes_3d'] = DC(gt_vecs_pts_loc, cpu_only=True)
+
+        return example
+
+    def prepare_train_data(self, index):
+        """
+        Training data preparation.
+        Args:
+            index (int): Index for accessing the target data.
+        Returns:
+            dict: Training data dict of the corresponding index.
+        """
+        data_queue = []
+
+        # temporal aug
+        prev_indexs_list = list(range(index-self.queue_length, index))
+        random.shuffle(prev_indexs_list)
+        prev_indexs_list = sorted(prev_indexs_list[1:], reverse=True)
+        ##
+
+        input_dict = self.get_data_info(index)
+        if input_dict is None:
+            return None
+        frame_idx = input_dict['frame_idx']
+        scene_token = input_dict['scene_token']
+        self.pre_pipeline(input_dict)
+        example = self.pipeline(input_dict)
+        example = self.vectormap_pipeline(example,input_dict)
+        if self.filter_empty_gt and \
+                ((example is None or ~(example['gt_labels_3d']._data != -1).any()) or \
+                    (example is None or ~(example['map_gt_labels_3d']._data != -1).any())):
+            return None
+        data_queue.insert(0, example)
+        for i in prev_indexs_list:
+            i = max(0, i)
+            input_dict = self.get_data_info(i)
+            if input_dict is None:
+                return None
+            if input_dict['frame_idx'] < frame_idx and input_dict['scene_token'] == scene_token:
+                self.pre_pipeline(input_dict)
+                example = self.pipeline(input_dict)
+                example = self.vectormap_pipeline(example,input_dict)
+                if self.filter_empty_gt and \
+                        (example is None or ~(example['gt_labels_3d']._data != -1).any()) and \
+                            (example is None or ~(example['map_gt_labels_3d']._data != -1).any()):
+                    return None
+                frame_idx = input_dict['frame_idx']
+            data_queue.insert(0, copy.deepcopy(example))
+        return self.union2one(data_queue)
+
+    def prepare_test_data(self, index):
+        """Prepare data for testing.
+
+        Args:
+            index (int): Index for accessing the target data.
+
+        Returns:
+            dict: Testing data dict of the corresponding index.
+        """
+        example={}
+        input_dict = self.get_data_info(index)
+        self.pre_pipeline(input_dict)
+        if self.pipeline:
+            example = self.pipeline(input_dict)
+        if self.is_vis_on_test:
+            example = self.vectormap_pipeline(example, input_dict)
+        return example
+
+    def union2one(self, queue):
+        """
+        convert sample queue into one single sample.
+        """
+        imgs_list = [each['img'].data for each in queue]
+        metas_map = {}
+        prev_pos = None
+        prev_angle = None
+        for i, each in enumerate(queue):
+            metas_map[i] = each['img_metas'].data
+            if i == 0:
+                metas_map[i]['prev_bev'] = False
+                prev_pos = copy.deepcopy(metas_map[i]['can_bus'][:3])
+                prev_angle = copy.deepcopy(metas_map[i]['can_bus'][-1])
+                metas_map[i]['can_bus'][:3] = 0
+                metas_map[i]['can_bus'][-1] = 0
+            else:
+                metas_map[i]['prev_bev'] = True
+                tmp_pos = copy.deepcopy(metas_map[i]['can_bus'][:3])
+                tmp_angle = copy.deepcopy(metas_map[i]['can_bus'][-1])
+                metas_map[i]['can_bus'][:3] -= prev_pos
+                metas_map[i]['can_bus'][-1] -= prev_angle
+                prev_pos = copy.deepcopy(tmp_pos)
+                prev_angle = copy.deepcopy(tmp_angle)
+
+        queue[-1]['img'] = DC(torch.stack(imgs_list),
+                              cpu_only=False, stack=True)
+        queue[-1]['img_metas'] = DC(metas_map, cpu_only=True)
+        queue = queue[-1]
+        return queue
+
+    def get_ann_info(self, index):
+        """Get annotation info according to the given index.
+
+        Args:
+            index (int): Index of the annotation data to get.
+
+        Returns:
+            dict: Annotation information consists of the following keys:
+
+                - gt_bboxes_3d (:obj:`LiDARInstance3DBoxes`): \
+                    3D ground truth bboxes
+                - gt_labels_3d (np.ndarray): Labels of ground truths.
+                - gt_names (list[str]): Class names of ground truths.
+        """
+        info = self.data_infos[index]
+        # filter out bbox containing no points
+        if self.use_valid_flag:
+            mask = info['valid_flag']
+        else:
+            mask = info['num_lidar_pts'] > 0
+        gt_bboxes_3d = info['gt_boxes'][mask]
+        gt_names_3d = info['gt_names'][mask]
+        gt_labels_3d = []
+        for cat in gt_names_3d:
+            if cat in self.CLASSES:
+                gt_labels_3d.append(self.CLASSES.index(cat))
+            else:
+                gt_labels_3d.append(-1)
+        gt_labels_3d = np.array(gt_labels_3d)
+
+        if self.with_velocity:
+            gt_velocity = info['gt_velocity'][mask]
+            nan_mask = np.isnan(gt_velocity[:, 0])
+            gt_velocity[nan_mask] = [0.0, 0.0]
+            gt_bboxes_3d = np.concatenate([gt_bboxes_3d, gt_velocity], axis=-1)
+        
+        if self.with_attr:
+            gt_fut_trajs = info['gt_agent_fut_trajs'][mask]
+            gt_fut_masks = info['gt_agent_fut_masks'][mask]
+            gt_fut_goal = info['gt_agent_fut_goal'][mask]
+            gt_lcf_feat = info['gt_agent_lcf_feat'][mask]
+            gt_fut_yaw = info['gt_agent_fut_yaw'][mask]
+            attr_labels = np.concatenate(
+                [gt_fut_trajs, gt_fut_masks, gt_fut_goal[..., None], gt_lcf_feat, gt_fut_yaw], axis=-1
+            ).astype(np.float32)
+
+        # the nuscenes box center is [0.5, 0.5, 0.5], we change it to be
+        # the same as KITTI (0.5, 0.5, 0)
+        gt_bboxes_3d = LiDARInstance3DBoxes(
+            gt_bboxes_3d,
+            box_dim=gt_bboxes_3d.shape[-1],
+            origin=(0.5, 0.5, 0.5)).convert_to(self.box_mode_3d)
+        
+        anns_results = dict(
+            gt_bboxes_3d=gt_bboxes_3d,
+            gt_labels_3d=gt_labels_3d,
+            gt_names=gt_names_3d,
+            attr_labels=attr_labels)
+
+        return anns_results
+
+    def get_data_info(self, index):
+        """Get data info according to the given index.
+
+        Args:
+            index (int): Index of the sample data to get.
+
+        Returns:
+            dict: Data information that will be passed to the data \
+                preprocessing pipelines. It includes the following keys:
+
+                - sample_idx (str): Sample index.
+                - pts_filename (str): Filename of point clouds.
+                - sweeps (list[dict]): Infos of sweeps.
+                - timestamp (float): Sample timestamp.
+                - img_filename (str, optional): Image filename.
+                - lidar2img (list[np.ndarray], optional): Transformations \
+                    from lidar to different cameras.
+                - ann_info (dict): Annotation info.
+        """
+        info = self.data_infos[index]
+        # standard protocal modified from SECOND.Pytorch
+        input_dict = dict(
+            sample_idx=info['token'],
+            pts_filename=info['lidar_path'],
+            sweeps=info['sweeps'],
+            ego2global_translation=info['ego2global_translation'],
+            ego2global_rotation=info['ego2global_rotation'],
+            lidar2ego_translation=info['lidar2ego_translation'],
+            lidar2ego_rotation=info['lidar2ego_rotation'],
+            prev_idx=info['prev'],
+            next_idx=info['next'],
+            scene_token=info['scene_token'],
+            can_bus=info['can_bus'],
+            frame_idx=info['frame_idx'],
+            timestamp=info['timestamp'] / 1e6,
+            fut_valid_flag=info['fut_valid_flag'],
+            map_location=info['map_location'],
+            ego_his_trajs=info['gt_ego_his_trajs'],
+            ego_fut_trajs=info['gt_ego_fut_trajs'],
+            ego_fut_masks=info['gt_ego_fut_masks'],
+            ego_fut_cmd=info['gt_ego_fut_cmd'],
+            ego_lcf_feat=info['gt_ego_lcf_feat']
+        )
+        # lidar to ego transform
+        lidar2ego = np.eye(4).astype(np.float32)
+        lidar2ego[:3, :3] = Quaternion(info["lidar2ego_rotation"]).rotation_matrix
+        lidar2ego[:3, 3] = info["lidar2ego_translation"]
+        input_dict["lidar2ego"] = lidar2ego
+
+        if self.modality['use_camera']:
+            image_paths = []
+            lidar2img_rts = []
+            lidar2cam_rts = []
+            cam_intrinsics = []
+            input_dict["camera2ego"] = []
+            input_dict["camera_intrinsics"] = []
+            for cam_type, cam_info in info['cams'].items():
+                image_paths.append(cam_info['data_path'])
+                # obtain lidar to image transformation matrix
+                lidar2cam_r = np.linalg.inv(cam_info['sensor2lidar_rotation'])
+                lidar2cam_t = cam_info[
+                    'sensor2lidar_translation'] @ lidar2cam_r.T
+                lidar2cam_rt = np.eye(4)
+                lidar2cam_rt[:3, :3] = lidar2cam_r.T
+                lidar2cam_rt[3, :3] = -lidar2cam_t
+                intrinsic = cam_info['cam_intrinsic']
+                viewpad = np.eye(4)
+                viewpad[:intrinsic.shape[0], :intrinsic.shape[1]] = intrinsic
+                lidar2img_rt = (viewpad @ lidar2cam_rt.T)
+                lidar2img_rts.append(lidar2img_rt)
+
+                cam_intrinsics.append(viewpad)
+                lidar2cam_rts.append(lidar2cam_rt.T)
+            
+                # camera to ego transform
+                camera2ego = np.eye(4).astype(np.float32)
+                camera2ego[:3, :3] = Quaternion(
+                    cam_info["sensor2ego_rotation"]
+                ).rotation_matrix
+                camera2ego[:3, 3] = cam_info["sensor2ego_translation"]
+                input_dict["camera2ego"].append(camera2ego)
+                # camera intrinsics
+                camera_intrinsics = np.eye(4).astype(np.float32)
+                camera_intrinsics[:3, :3] = cam_info["cam_intrinsic"]
+                input_dict["camera_intrinsics"].append(camera_intrinsics)
+
+            input_dict.update(
+                dict(
+                    img_filename=image_paths,
+                    lidar2img=lidar2img_rts,
+                    cam_intrinsic=cam_intrinsics,
+                    lidar2cam=lidar2cam_rts,
+                ))
+
+        # NOTE: now we load gt in test_mode for evaluating
+        # if not self.test_mode:
+        #     annos = self.get_ann_info(index)
+        #     input_dict['ann_info'] = annos
+
+        annos = self.get_ann_info(index)
+        input_dict['ann_info'] = annos
+
+        rotation = Quaternion(input_dict['ego2global_rotation'])
+        translation = input_dict['ego2global_translation']
+        can_bus = input_dict['can_bus']
+        can_bus[:3] = translation
+        can_bus[3:7] = rotation
+        patch_angle = quaternion_yaw(rotation) / np.pi * 180
+        if patch_angle < 0:
+            patch_angle += 360
+        can_bus[-2] = patch_angle / 180 * np.pi
+        can_bus[-1] = patch_angle
+
+        lidar2ego = np.eye(4)
+        lidar2ego[:3,:3] = Quaternion(input_dict['lidar2ego_rotation']).rotation_matrix
+        lidar2ego[:3, 3] = input_dict['lidar2ego_translation']
+        ego2global = np.eye(4)
+        ego2global[:3,:3] = Quaternion(input_dict['ego2global_rotation']).rotation_matrix
+        ego2global[:3, 3] = input_dict['ego2global_translation']
+        lidar2global = ego2global @ lidar2ego
+        input_dict['lidar2global'] = lidar2global
+
+        return input_dict
+
+    def __getitem__(self, idx):
+        """Get item from infos according to the given index.
+        Returns:
+            dict: Data dictionary of the corresponding index.
+        """
+        if self.test_mode:
+            return self.prepare_test_data(idx)
+        while True:
+
+            data = self.prepare_train_data(idx)
+            if data is None:
+                idx = self._rand_another(idx)
+                continue
+            return data
+
+    def _format_gt(self):
+        gt_annos = []
+        print('Start to convert gt map format...')
+        # assert self.map_ann_file is not None
+        if (not os.path.exists(self.map_ann_file)) :
+            dataset_length = len(self)
+            prog_bar = mmcv.ProgressBar(dataset_length)
+            mapped_class_names = self.MAPCLASSES
+            for sample_id in range(dataset_length):
+                sample_token = self.data_infos[sample_id]['token']
+                gt_anno = {}
+                gt_anno['sample_token'] = sample_token
+                # gt_sample_annos = []
+                gt_sample_dict = {}
+                gt_sample_dict = self.vectormap_pipeline(gt_sample_dict, self.data_infos[sample_id])
+                gt_labels = gt_sample_dict['map_gt_labels_3d'].data.numpy()
+                gt_vecs = gt_sample_dict['map_gt_bboxes_3d'].data.instance_list
+                gt_vec_list = []
+                for i, (gt_label, gt_vec) in enumerate(zip(gt_labels, gt_vecs)):
+                    name = mapped_class_names[gt_label]
+                    anno = dict(
+                        pts=np.array(list(gt_vec.coords)),
+                        pts_num=len(list(gt_vec.coords)),
+                        cls_name=name,
+                        type=gt_label,
+                    )
+                    gt_vec_list.append(anno)
+                gt_anno['vectors']=gt_vec_list
+                gt_annos.append(gt_anno)
+
+                prog_bar.update()
+            nusc_submissions = {
+                'GTs': gt_annos
+            }
+            print('\n GT anns writes to', self.map_ann_file)
+            mmcv.dump(nusc_submissions, self.map_ann_file)
+        else:
+            print(f'{self.map_ann_file} exist, not update')
+
+    def _format_bbox(self, results, jsonfile_prefix=None, score_thresh=0.2):
+        """Convert the results to the standard format.
+
+        Args:
+            results (list[dict]): Testing results of the dataset.
+            jsonfile_prefix (str): The prefix of the output jsonfile.
+                You can specify the output directory/filename by
+                modifying the jsonfile_prefix. Default: None.
+
+        Returns:
+            str: Path of the output json file.
+        """
+        nusc_annos = {}
+        det_mapped_class_names = self.CLASSES
+
+        # assert self.map_ann_file is not None
+        map_pred_annos = {}
+        map_mapped_class_names = self.MAPCLASSES
+
+        plan_annos = {}
+
+        print('Start to convert detection format...')
+        for sample_id, det in enumerate(mmcv.track_iter_progress(results)):
+            annos = []
+            boxes = output_to_nusc_box(det)
+            sample_token = self.data_infos[sample_id]['token']
+
+            # plan_annos[sample_token] = [det['ego_fut_preds'], det['ego_fut_cmd']]
+            plan_annos[sample_token] = [det['ego_fut_preds'], det['ego_fut_cmd'], \
+                                        det['ego_fut_gt'], det['ego_his_gt'], det['ego_traj_cls_scores'], \
+                                        det['plan_cls']]
+
+            boxes = lidar_nusc_box_to_global(self.data_infos[sample_id], boxes,
+                                             det_mapped_class_names,
+                                             self.custom_eval_detection_configs,
+                                             self.eval_version)
+            for i, box in enumerate(boxes):
+                if box.score < score_thresh:
+                    continue
+                name = det_mapped_class_names[box.label]
+                if np.sqrt(box.velocity[0]**2 + box.velocity[1]**2) > 0.2:
+                    if name in [
+                            'car',
+                            'construction_vehicle',
+                            'bus',
+                            'truck',
+                            'trailer',
+                    ]:
+                        attr = 'vehicle.moving'
+                    elif name in ['bicycle', 'motorcycle']:
+                        attr = 'cycle.with_rider'
+                    else:
+                        attr = NuScenesDataset.DefaultAttribute[name]
+                else:
+                    if name in ['pedestrian']:
+                        attr = 'pedestrian.standing'
+                    elif name in ['bus']:
+                        attr = 'vehicle.stopped'
+                    else:
+                        attr = NuScenesDataset.DefaultAttribute[name]
+
+                nusc_anno = dict(
+                    sample_token=sample_token,
+                    translation=box.center.tolist(),
+                    size=box.wlh.tolist(),
+                    rotation=box.orientation.elements.tolist(),
+                    velocity=box.velocity[:2].tolist(),
+                    detection_name=name,
+                    detection_score=box.score,
+                    attribute_name=attr,
+                    fut_traj=box.fut_trajs.tolist())
+                annos.append(nusc_anno)
+            nusc_annos[sample_token] = annos
+
+
+            map_pred_anno = {}
+            vecs = output_to_vecs(det)
+            sample_token = self.data_infos[sample_id]['token']
+            map_pred_anno['sample_token'] = sample_token
+            pred_vec_list=[]
+            for i, vec in enumerate(vecs):
+                name = map_mapped_class_names[vec['label']]
+                anno = dict(
+                    # sample_token=sample_token,
+                    pts=vec['pts'],
+                    betas=vec['betas'],
+                    pts_num=len(vec['pts']),
+                    cls_name=name,
+                    type=vec['label'],
+                    confidence_level=vec['score'])
+                pred_vec_list.append(anno)
+                # annos.append(nusc_anno)
+            # nusc_annos[sample_token] = annos
+            map_pred_anno['vectors'] = pred_vec_list
+            map_pred_annos[sample_token] = map_pred_anno
+
+        if not os.path.exists(self.map_ann_file):
+            self._format_gt()
+        else:
+            print(f'{self.map_ann_file} exist, not update')
+        # with open(self.map_ann_file,'r') as f:
+        #     GT_anns = json.load(f)
+        # gt_annos = GT_anns['GTs']
+
+        nusc_submissions = {
+            'meta': self.modality,
+            'results': nusc_annos,
+            'map_results': map_pred_annos,
+            'plan_results': plan_annos
+            # 'GTs': gt_annos
+        }
+
+        mmcv.mkdir_or_exist(jsonfile_prefix)
+        if self.use_pkl_result:
+            res_path = osp.join(jsonfile_prefix, 'results_nusc.pkl')
+        else:
+            res_path = osp.join(jsonfile_prefix, 'results_nusc.json')
+        print('Results writes to', res_path)
+        mmcv.dump(nusc_submissions, res_path)
+        return res_path
+
+    def format_results(self, results, jsonfile_prefix=None):
+        """Format the results to json (standard format for COCO evaluation).
+
+        Args:
+            results (list[dict]): Testing results of the dataset.
+            jsonfile_prefix (str | None): The prefix of json files. It includes
+                the file path and the prefix of filename, e.g., "a/b/prefix".
+                If not specified, a temp file will be created. Default: None.
+
+        Returns:
+            tuple: Returns (result_files, tmp_dir), where `result_files` is a \
+                dict containing the json filepaths, `tmp_dir` is the temporal \
+                directory created for saving json files when \
+                `jsonfile_prefix` is not specified.
+        """
+        if isinstance(results, dict):
+            # print(f'results must be a list, but get dict, keys={results.keys()}')
+            # assert isinstance(results, list)
+            results = results['bbox_results']
+        assert isinstance(results, list)
+        assert len(results) == len(self), (
+            'The length of results is not equal to the dataset len: {} != {}'.
+            format(len(results), len(self)))
+
+        if jsonfile_prefix is None:
+            tmp_dir = tempfile.TemporaryDirectory()
+            jsonfile_prefix = osp.join(tmp_dir.name, 'results')
+        else:
+            tmp_dir = None
+
+        # currently the output prediction results could be in two formats
+        # 1. list of dict('boxes_3d': ..., 'scores_3d': ..., 'labels_3d': ...)
+        # 2. list of dict('pts_bbox' or 'img_bbox':
+        #     dict('boxes_3d': ..., 'scores_3d': ..., 'labels_3d': ...))
+        # this is a workaround to enable evaluation of both formats on nuScenes
+        # refer to https://github.com/open-mmlab/mmdetection3d/issues/449
+        if not ('pts_bbox' in results[0] or 'img_bbox' in results[0]):
+            result_files = self._format_bbox(results, jsonfile_prefix)
+        else:
+            # should take the inner dict out of 'pts_bbox' or 'img_bbox' dict
+            result_files = dict()
+            for name in results[0]:
+                if name == 'metric_results':
+                    continue
+                print(f'\nFormating bboxes of {name}')
+                results_ = [out[name] for out in results]
+                tmp_file_ = osp.join(jsonfile_prefix, name)
+                result_files.update(
+                    {name: self._format_bbox(results_, tmp_file_)})
+        return result_files, tmp_dir
+
+    def _evaluate_single(self,
+                         result_path,
+                         logger=None,
+                         metric='bbox',
+                         map_metric='chamfer',
+                         result_name='pts_bbox'):
+        """Evaluation for a single model in nuScenes protocol.
+
+        Args:
+            result_path (str): Path of the result file.
+            logger (logging.Logger | str | None): Logger used for printing
+                related information during evaluation. Default: None.
+            metric (str): Metric name used for evaluation. Default: 'bbox'.
+            result_name (str): Result name in the metric prefix.
+                Default: 'pts_bbox'.
+
+        Returns:
+            dict: Dictionary of evaluation details.
+        """
+        detail = dict()
+        from nuscenes import NuScenes
+        self.nusc = NuScenes(version=self.version, dataroot=self.data_root,
+                             verbose=False)
+        self.MAPCLASSES = ['divider','ped_crossing','boundary']
+        output_dir = osp.join(*osp.split(result_path)[:-1])
+
+        eval_set_map = {
+            'v1.0-mini': 'mini_val',
+            'v1.0-trainval': 'val',
+        }
+        self.nusc_eval = NuScenesEval_custom(
+            self.nusc,
+            config=self.custom_eval_detection_configs,
+            result_path=result_path,
+            eval_set=eval_set_map[self.version],
+            output_dir=output_dir,
+            verbose=False,
+            overlap_test=self.overlap_test,
+            data_infos=self.data_infos
+        )
+        self.nusc_eval.main(plot_examples=0, render_curves=False)
+        # record metrics
+        metrics = mmcv.load(osp.join(output_dir, 'metrics_summary.json'))
+        metric_prefix = f'{result_name}_NuScenes'
+        for name in self.CLASSES:
+            for k, v in metrics['label_aps'][name].items():
+                val = float('{:.4f}'.format(v))
+                detail['{}/{}_AP_dist_{}'.format(metric_prefix, name, k)] = val
+            for k, v in metrics['label_tp_errors'][name].items():
+                val = float('{:.4f}'.format(v))
+                detail['{}/{}_{}'.format(metric_prefix, name, k)] = val
+            for k, v in metrics['tp_errors'].items():
+                val = float('{:.4f}'.format(v))
+                detail['{}/{}'.format(metric_prefix,
+                                      self.ErrNameMapping[k])] = val
+        detail['{}/NDS'.format(metric_prefix)] = metrics['nd_score']
+        detail['{}/mAP'.format(metric_prefix)] = metrics['mean_ap']
+
+
+        from projects.mmdet3d_plugin.datasets.map_utils.mean_ap import eval_map
+        from projects.mmdet3d_plugin.datasets.map_utils.mean_ap import format_res_gt_by_classes
+        result_path = osp.abspath(result_path)
+        
+        print('Formating results & gts by classes')
+        pred_results = mmcv.load(result_path)
+        map_results = pred_results['map_results']
+        gt_anns = mmcv.load(self.map_ann_file)
+        map_annotations = gt_anns['GTs']
+        cls_gens, cls_gts = format_res_gt_by_classes(result_path,
+                                                     map_results,
+                                                     map_annotations,
+                                                     cls_names=self.MAPCLASSES,
+                                                     num_pred_pts_per_instance=self.fixed_num,
+                                                     eval_use_same_gt_sample_num_flag=self.eval_use_same_gt_sample_num_flag,
+                                                     pc_range=self.pc_range)
+        map_metrics = map_metric if isinstance(map_metric, list) else [map_metric]
+        allowed_metrics = ['chamfer', 'iou']
+        for metric in map_metrics:
+            if metric not in allowed_metrics:
+                raise KeyError(f'metric {metric} is not supported')
+        for metric in map_metrics:
+            print('-*'*10+f'use metric:{metric}'+'-*'*10)
+            if metric == 'chamfer':
+                thresholds = [0.5,1.0,1.5]
+            elif metric == 'iou':
+                thresholds= np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
+            cls_aps = np.zeros((len(thresholds),self.NUM_MAPCLASSES))
+            for i, thr in enumerate(thresholds):
+                print('-*'*10+f'threshhold:{thr}'+'-*'*10)
+                mAP, cls_ap = eval_map(
+                                map_results,
+                                map_annotations,
+                                cls_gens,
+                                cls_gts,
+                                threshold=thr,
+                                cls_names=self.MAPCLASSES,
+                                logger=logger,
+                                num_pred_pts_per_instance=self.fixed_num,
+                                pc_range=self.pc_range,
+                                metric=metric)
+                for j in range(self.NUM_MAPCLASSES):
+                    cls_aps[i, j] = cls_ap[j]['ap']
+            for i, name in enumerate(self.MAPCLASSES):
+                print('{}: {}'.format(name, cls_aps.mean(0)[i]))
+                detail['NuscMap_{}/{}_AP'.format(metric,name)] =  cls_aps.mean(0)[i]
+            print('map: {}'.format(cls_aps.mean(0).mean()))
+            detail['NuscMap_{}/mAP'.format(metric)] = cls_aps.mean(0).mean()
+            for i, name in enumerate(self.MAPCLASSES):
+                for j, thr in enumerate(thresholds):
+                    if metric == 'chamfer':
+                        detail['NuscMap_{}/{}_AP_thr_{}'.format(metric,name,thr)]=cls_aps[j][i]
+                    elif metric == 'iou':
+                        if thr == 0.5 or thr == 0.75:
+                            detail['NuscMap_{}/{}_AP_thr_{}'.format(metric,name,thr)]=cls_aps[j][i]
+
+        return detail
+
+    def evaluate(self,
+                 results,
+                 metric='bbox',
+                 map_metric='chamfer',
+                 logger=None,
+                 jsonfile_prefix=None,
+                 result_names=['pts_bbox'],
+                 show=False,
+                 out_dir=None,
+                 pipeline=None):
+        """Evaluation in nuScenes protocol.
+
+        Args:
+            results (list[dict]): Testing results of the dataset.
+            metric (str | list[str]): Metrics to be evaluated.
+            logger (logging.Logger | str | None): Logger used for printing
+                related information during evaluation. Default: None.
+            jsonfile_prefix (str | None): The prefix of json files. It includes
+                the file path and the prefix of filename, e.g., "a/b/prefix".
+                If not specified, a temp file will be created. Default: None.
+            show (bool): Whether to visualize.
+                Default: False.
+            out_dir (str): Path to save the visualization results.
+                Default: None.
+            pipeline (list[dict], optional): raw data loading for showing.
+                Default: None.
+
+        Returns:
+            dict[str, float]: Results of each evaluation metric.
+        """
+        result_metric_names = ['EPA', 'ADE', 'FDE', 'MR']
+        motion_cls_names = ['car', 'pedestrian']
+        motion_metric_names = ['gt', 'cnt_ade', 'cnt_fde', 'hit',
+                               'fp', 'ADE', 'FDE', 'MR']
+        all_metric_dict = {}
+        for met in motion_metric_names:
+            for cls in motion_cls_names:
+                all_metric_dict[met+'_'+cls] = 0.0
+        result_dict = {}
+        for met in result_metric_names:
+            for cls in motion_cls_names:
+                result_dict[met+'_'+cls] = 0.0
+        
+        alpha = 0.5
+
+        for i in range(len(results)):
+            for key in all_metric_dict.keys():
+                all_metric_dict[key] += results[i]['metric_results'][key]
+        
+        for cls in motion_cls_names:
+            result_dict['EPA_'+cls] = (all_metric_dict['hit_'+cls] - \
+                 alpha * all_metric_dict['fp_'+cls]) / all_metric_dict['gt_'+cls]
+            result_dict['ADE_'+cls] = all_metric_dict['ADE_'+cls] / all_metric_dict['cnt_ade_'+cls]
+            result_dict['FDE_'+cls] = all_metric_dict['FDE_'+cls] / all_metric_dict['cnt_fde_'+cls]
+            result_dict['MR_'+cls] = all_metric_dict['MR_'+cls] / all_metric_dict['cnt_fde_'+cls]
+        
+        print('\n')
+        print('-------------- Motion Prediction --------------')
+        for k, v in result_dict.items():
+            print(f'{k}: {v}')
+
+        # NOTE: print planning metric
+        print('\n')
+        print('-------------- Planning --------------')
+        metric_dict = None
+        num_valid = 0
+        for res in results:
+            if res['metric_results']['fut_valid_flag']:
+                num_valid += 1
+            else:
+                continue
+            if metric_dict is None:
+                metric_dict = copy.deepcopy(res['metric_results'])
+            else:
+                for k in res['metric_results'].keys():
+                    if isinstance(metric_dict[k], (int, float)):
+                        metric_dict[k] += res['metric_results'][k]
+        
+        for k in metric_dict:
+            if isinstance(metric_dict[k], (int, float)):
+                metric_dict[k] = metric_dict[k] / num_valid
+                print("{}:{}".format(k, metric_dict[k]))
+
+        result_files, tmp_dir = self.format_results(results, jsonfile_prefix)
+        
+        if isinstance(result_files, dict):
+            results_dict = dict()
+            for name in result_names:
+                print('Evaluating bboxes of {}'.format(name))
+                ret_dict = self._evaluate_single(result_files[name], metric=metric, map_metric=map_metric)
+            results_dict.update(ret_dict)
+        elif isinstance(result_files, str):
+            results_dict = self._evaluate_single(result_files, metric=metric, map_metric=map_metric)
+
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+
+        if show:
+            self.show(results, out_dir, pipeline=pipeline)
+        
+        results_dict.update({str(k): (v.item() if isinstance(v, torch.Tensor) else v) for k, v in result_dict.items()})  # motion
+        results_dict.update({str(k): (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metric_dict.items()})  # planning
+
+        return results_dict
+
+@DATASETS.register_module()
+class VADCustomNuScenesDataset_DAC(NuScenesDataset):
+    r"""Custom NuScenes Dataset.
+    """
+    # orginal config is divider
+    MAPCLASSES = ('divider',)
+    def __init__(
+        self,
+        queue_length=4,
+        bev_size=(200, 200),
+        overlap_test=False,
+        with_attr=True,
+        fut_ts=6,
+        pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0],
+        map_classes=None,
+        map_ann_file=None,
+        map_fixed_ptsnum_per_line=-1,
+        map_eval_use_same_gt_sample_num_flag=False,
+        padding_value=-10000,
+        use_pkl_result=False,
+        custom_eval_version='vad_nusc_detection_cvpr_2019',
+        *args,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.queue_length = queue_length
+        self.overlap_test = overlap_test
+        self.bev_size = bev_size
+        self.with_attr = with_attr
+        self.fut_ts = fut_ts
+        self.use_pkl_result = use_pkl_result
+
+        self.custom_eval_version = custom_eval_version
+        # Check if config exists.
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        cfg_path = os.path.join(this_dir, '%s.json' % self.custom_eval_version)
+        assert os.path.exists(cfg_path), \
+            'Requested unknown configuration {}'.format(self.custom_eval_version)
+        # Load config file and deserialize it.
+        with open(cfg_path, 'r') as f:
+            data = json.load(f)
+        self.custom_eval_detection_configs = v1CustomDetectionConfig.deserialize(data)
+
+        self.map_ann_file = map_ann_file
+        # self.MAPCLASSES = self.get_map_classes(map_classes)
         self.MAPCLASSES=['divider','ped_crossing','boundary','drivable_area']
         self.NUM_MAPCLASSES = len(['divider','ped_crossing','boundary'])
         # self.NUM_MAPCLASSES = len(self.MAPCLASSES)
@@ -1133,6 +1990,7 @@ class VADCustomNuScenesDataset(NuScenesDataset):
         #         gt_vecs_pts_loc = gt_vecs_pts_loc
 
         example['map_gt_labels_3d'] = DC(gt_vecs_label, cpu_only=False)
+        # example['map_gt_bboxes_3d'] = DC(gt_vecs_pts_loc, cpu_only=True)
         example['map_gt_bboxes_3d'] = DC(anns_results['gt_vecs_pts_loc'], cpu_only=True)
 
         return example
@@ -1955,7 +2813,7 @@ def output_to_vecs(detection):
     scores = detection['map_scores_3d'].numpy()
     labels = detection['map_labels_3d'].numpy()
     pts = detection['map_pts_3d'].numpy()
-    #加入不确定性信息
+    #add beta
     betas = detection['map_betas_3d'].numpy()
 
     vec_list = []

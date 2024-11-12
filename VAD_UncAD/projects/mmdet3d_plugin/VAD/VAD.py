@@ -13,7 +13,7 @@ import cv2
 from projects.mmdet3d_plugin.models.utils.grid_mask import GridMask
 from projects.mmdet3d_plugin.VAD.planner.metric_stp3 import PlanningMetric
 from torch.distributions.laplace import Laplace
-from projects.mmdet3d_plugin.datasets.nuscenes_vad_dataset import VADCustomNuScenesDataset
+from projects.mmdet3d_plugin.datasets.nuscenes_vad_dataset import VADCustomNuScenesDataset, VADCustomNuScenesDataset_DAC
 
 
 @DETECTORS.register_module()
@@ -68,7 +68,7 @@ class VAD(MVXTwoStageDetector):
         # add nuscene map
         H, W=4.084, 1.85
         test_pipeline = []
-        self.nuscene_map=VADCustomNuScenesDataset(ann_file="data_processed/vad/vad_nuscenes_infos_temporal_val.pkl", \
+        self.nuscene_map=VADCustomNuScenesDataset_DAC(ann_file="data_processed/vad_nuscenes_infos_temporal_val.pkl", \
                                  data_root="data/nuscenes",pipeline=test_pipeline)
         self.pts = np.array([
             [-H / 2. + 0.5, W / 2.],
