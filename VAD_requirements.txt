@@ -177,4 +177,4 @@ websocket-client==1.8.0
 werkzeug==3.0.2
 widgetsnbextension==4.0.10
 yapf==0.40.1
-zipp==3.18.
+zipp==3.18.0
