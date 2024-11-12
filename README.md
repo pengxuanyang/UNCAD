@@ -16,8 +16,8 @@ VAD_unc checkpoints are [here](https://drive.google.com/file/d/1v8ckftOywZe4r6rz
 
 ## Catalog
 
-- [ ] Clarification Code
-- [ ] Checkpoint release
+- [x] Clarification Code
+- [x] Checkpoint release
 - [x] Code release
   - [x] VAD_unc
   - [x] SparseDrive_unc
