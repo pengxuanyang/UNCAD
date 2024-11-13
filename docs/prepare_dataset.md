@@ -24,6 +24,13 @@ sh script/create_data.sh
 
 Using the above code will generate `vad_nuscenes_infos_temporal_{train,val}.pkl`.
 
+**Generate anchors by K-means**
+Gnerated anchors are saved to data/kmeans and can be visualized in vis/kmeans.
+```
+mkdir -p vis/kmeans
+sh scripts/kmeans.sh
+```
+
 **Folder Structure**
 ```
 Vad_UncAD
@@ -37,17 +44,13 @@ Vad_UncAD
 │   │   ├── v1.0-test/
 │   |   ├── v1.0-trainval/
 │   ├── can_bus/
+│   ├── kmeans/
+│   │   ├── kmeans_plan_6.npy
 ├── data_processed/
 │   ├── vad_nuscenes_infos_temporal_train.pkl
 │   ├── vad_nuscenes_infos_temporal_val.pkl
 ```
 
-**Generate anchors by K-means**
-Gnerated anchors are saved to data/kmeans and can be visualized in vis/kmeans.
-```
-mkdir -p vis/kmeans
-sh scripts/kmeans.sh
-```
 
 ## Prepare SparseDrive Dataset
 
@@ -80,4 +83,27 @@ Gnerated anchors are saved to data/kmeans and can be visualized in vis/kmeans.
 mkdir -p vis/kmeans
 sh scripts/kmeans.sh
 ```
-
+**Folder Structure**
+```
+SparseDrive_UncAD
+├── data
+│   ├── nuscenes/
+│   │   ├── can_bus/
+│   │   ├── maps/
+│   │   ├── samples/
+│   │   ├── sweeps/
+│   │   ├── v1.0-mini/
+│   │   ├── v1.0-test/
+│   |   ├── v1.0-trainval/
+│   ├── infos/
+│   │   ├── nuscenes_infos_train.pkl
+│   │   ├── nuscenes_infos_val.pkl
+│   │   ├── nuscenes_infos_test.pkl
+│   ├── kmeans/
+│   │   ├── kmeans_det_900.npy
+│   │   ├── kmeans_map_100.npy
+│   │   ├── kmeans_motion_6.npy
+│   │   ├── kmeans_plan_6.npy
+│   │   ├── kmeans_map_100.npy
+│   │   ├── kmeans_map_100.npy
+```
