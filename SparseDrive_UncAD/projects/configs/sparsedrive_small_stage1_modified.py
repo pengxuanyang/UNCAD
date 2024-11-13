@@ -101,7 +101,7 @@ model = dict(
         with_cp=True,
         out_indices=(0, 1, 2, 3),
         norm_cfg=dict(type="BN", requires_grad=True),
-        pretrained="ckpt/resnet50-19c8e357.pth",
+        pretrained="ckpts/resnet50-19c8e357.pth",
     ),
     img_neck=dict(
         type="FPN",

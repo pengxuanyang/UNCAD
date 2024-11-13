@@ -100,7 +100,7 @@ model = dict(
         with_cp=True,
         out_indices=(0, 1, 2, 3),
         norm_cfg=dict(type="BN", requires_grad=True),
-        pretrained="ckpt/resnet50-19c8e357.pth",
+        pretrained="ckpts/resnet50-19c8e357.pth",
     ),
     img_neck=dict(
         type="FPN",
@@ -719,4 +719,4 @@ evaluation = dict(
     eval_mode=eval_mode,
 )
 # ================== pretrained model ========================
-load_from = 'ckpt/sparsedrive_stage1.pth'
+load_from = 'ckpts/sparsedrive_stage1.pth'

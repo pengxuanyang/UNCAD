@@ -4,4 +4,4 @@ bash ./tools/dist_test.sh \
     ckpt/VAD_UncAD.pth \
     8 \
     --tmpdir tmp \
-    --eval bbox \
+    --eval bbox 

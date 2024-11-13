@@ -3,5 +3,5 @@ bash  ./tools/dist_train.sh \
    projects/configs/VAD/VAD_base_e2e_modified.py \
    8 \
    --launcher pytorch \
-   --deterministic \
+   --deterministic 
    

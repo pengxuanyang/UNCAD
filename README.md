@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/f9b27f10-7d62-4729-9090-dd56487461e2
 
 ## Results
 
-VAD_unc checkpoints are [here](https://drive.google.com/file/d/1v8ckftOywZe4r6rzp7WwifRR3KpMH8os/view?usp=drive_link). SparseDrive_unc checkpoints are [here](https://drive.google.com/file/d/14SGCFVKYdaSdyzaLFU0kGwwb-suHVdZu/view?usp=drive_link). 
+VAD_unc checkpoints are [here](https://drive.google.com/file/d/1v8ckftOywZe4r6rzp7WwifRR3KpMH8os/view?usp=drive_link). SparseDrive_unc stage1 checkpoints are [here](https://drive.google.com/file/d/14SGCFVKYdaSdyzaLFU0kGwwb-suHVdZu/view?usp=drive_link). SparseDrive_unc stage2 checkpoints are [here](https://drive.google.com/file/d/1M2ANw8uQdISuKlLlC5_cX9a8Fdm4VrJP/view?usp=drive_link). 
 
 ## Catalog
 

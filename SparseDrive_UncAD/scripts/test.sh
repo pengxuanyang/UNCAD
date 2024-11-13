@@ -3,5 +3,5 @@ bash ./tools/dist_test.sh \
     ckpt/sparsedrive_stage2_UncAD.pth \
     8 \
     --deterministic \
-    --eval bbox \
+    --eval bbox 
     # --result_file ./work_dirs/sparsedrive_small_stage2/results.pkl
