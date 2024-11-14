@@ -56,6 +56,7 @@ def custom_multi_gpu_test(model, data_loader, tmpdir=None, gpu_collect=False):
     model.eval()
     bbox_results = []
     mask_results = []
+    data_loader.num_workers = 0
     dataset = data_loader.dataset
     rank, world_size = get_dist_info()
     if rank == 0:

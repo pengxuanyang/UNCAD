@@ -3,13 +3,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 from shapely.geometry import Polygon
-
+from shapely.geometry import Point
 from mmcv.utils import print_log
 from mmdet.datasets import build_dataset, build_dataloader
 
 from projects.mmdet3d_plugin.datasets.utils import box3d_to_corners
 from skimage.draw import polygon
 import cv2
+import copy
+import matplotlib.pyplot as plt
 from projects.mmdet3d_plugin.datasets.nuscenes_3d_dataset import NuScenes3DDataset
 
 def check_collision(ego_box, boxes):
@@ -67,7 +69,7 @@ class PlanningMetric():
         self.reset()
 
         test_pipeline = []
-        self.nuscene_map=NuScenes3DDataset(ann_file="data/infos_dac/nuscenes_infos_val.pkl", \
+        self.nuscene_map=NuScenes3DDataset(ann_file="data/infos/nuscenes_infos_val.pkl", \
                                  data_root="data/nuscenes",pipeline=test_pipeline)
         self.pts = np.array([
             [-self.H / 2. + 0.5, self.W / 2.],

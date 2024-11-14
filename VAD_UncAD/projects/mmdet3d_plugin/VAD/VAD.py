@@ -461,7 +461,12 @@ class VAD(MVXTwoStageDetector):
             ego_fut_preds = ego_fut_preds.cumsum(dim=-2)
             ego_fut_trajs = ego_fut_trajs.cumsum(dim=-2)
 
-            update_ego_traj_cls_scores, min_nll_per_mode,best_ego_traj_cls_scores, best_ego_fut_pred = self.select(map_det_pts,map_det_betas,det_bbox,
+            update_ego_traj_cls_scores, min_nll_per_mode,best_ego_traj_cls_scores, best_ego_fut_pred = self.select(
+                                            map_det_pts,
+                                            map_det_betas,
+                                            map_det_label,
+                                            map_det_scores,
+                                            det_bbox,
                                             det_label,
                                             det_scores,
                                             motion_traj_pred,
